@@ -66,67 +66,70 @@ def parse_cookies(cookies_data):
 
 
 async def get_waf_cookies_with_playwright(account_name: str, login_url: str, required_cookies: list[str]):
-	"""使用 Playwright 获取 WAF cookies（隐私模式）"""
-	print(f'[PROCESSING] {account_name}: Starting browser to get WAF cookies...')
+    """使用 Playwright 获取 WAF cookies（隐私模式，忽略证书错误）"""
+    print(f'[PROCESSING] {account_name}: Starting browser to get WAF cookies...')
 
-	async with async_playwright() as p:
-		import tempfile
+    async with async_playwright() as p:
+        import tempfile
 
-		with tempfile.TemporaryDirectory() as temp_dir:
-			context = await p.chromium.launch_persistent_context(
-				user_data_dir=temp_dir,
-				headless=False,
-				user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36',
-				viewport={'width': 1920, 'height': 1080},
-				args=[
-					'--disable-blink-features=AutomationControlled',
-					'--disable-dev-shm-usage',
-					'--disable-web-security',
-					'--disable-features=VizDisplayCompositor',
-					'--no-sandbox',
-				],
-			)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            context = await p.chromium.launch_persistent_context(
+                user_data_dir=temp_dir,
+                headless=True,  # CI 建议 headless
+                ignore_https_errors=True,  
+                user_agent=(
+                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                    'AppleWebKit/537.36 (KHTML, like Gecko) '
+                    'Chrome/138.0.0.0 Safari/537.36'
+                ),
+                viewport={'width': 1920, 'height': 1080},
+                args=[
+                    '--ignore-certificate-errors',  # 
+                    '--disable-blink-features=AutomationControlled',
+                    '--disable-dev-shm-usage',
+                    '--disable-web-security',
+                    '--disable-features=VizDisplayCompositor',
+                    '--no-sandbox',
+                ],
+            )
 
-			page = await context.new_page()
+            page = await context.new_page()
 
-			try:
-				print(f'[PROCESSING] {account_name}: Access login page to get initial cookies...')
+            try:
+                print(f'[PROCESSING] {account_name}: Access login page to get initial cookies...')
 
-				await page.goto(login_url, wait_until='networkidle')
+                await page.goto(login_url, wait_until='networkidle')
 
-				try:
-					await page.wait_for_function('document.readyState === "complete"', timeout=5000)
-				except Exception:
-					await page.wait_for_timeout(3000)
+                try:
+                    await page.wait_for_function('document.readyState === "complete"', timeout=5000)
+                except Exception:
+                    await page.wait_for_timeout(3000)
 
-				cookies = await page.context.cookies()
+                cookies = await page.context.cookies()
 
-				waf_cookies = {}
-				for cookie in cookies:
-					cookie_name = cookie.get('name')
-					cookie_value = cookie.get('value')
-					if cookie_name in required_cookies and cookie_value is not None:
-						waf_cookies[cookie_name] = cookie_value
+                waf_cookies = {
+                    c['name']: c['value']
+                    for c in cookies
+                    if c['name'] in required_cookies
+                }
 
-				print(f'[INFO] {account_name}: Got {len(waf_cookies)} WAF cookies')
+                print(f'[INFO] {account_name}: Got {len(waf_cookies)} WAF cookies')
 
-				missing_cookies = [c for c in required_cookies if c not in waf_cookies]
+                missing_cookies = [c for c in required_cookies if c not in waf_cookies]
+                if missing_cookies:
+                    print(f'[FAILED] {account_name}: Missing WAF cookies: {missing_cookies}')
+                    await context.close()
+                    return None
 
-				if missing_cookies:
-					print(f'[FAILED] {account_name}: Missing WAF cookies: {missing_cookies}')
-					await context.close()
-					return None
+                print(f'[SUCCESS] {account_name}: Successfully got all WAF cookies')
 
-				print(f'[SUCCESS] {account_name}: Successfully got all WAF cookies')
+                await context.close()
+                return waf_cookies
 
-				await context.close()
-
-				return waf_cookies
-
-			except Exception as e:
-				print(f'[FAILED] {account_name}: Error occurred while getting WAF cookies: {e}')
-				await context.close()
-				return None
+            except Exception as e:
+                print(f'[FAILED] {account_name}: Error occurred while getting WAF cookies: {e}')
+                await context.close()
+                return None
 
 
 def get_user_info(client, headers, user_info_url: str):
