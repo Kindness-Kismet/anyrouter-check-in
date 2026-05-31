@@ -267,18 +267,18 @@ async def check_in_account(account: AccountConfig, account_index: int, app_confi
 	provider_config = app_config.get_provider(account.provider)
 	if not provider_config:
 		print(f'[FAILED] {account_name}: Provider "{account.provider}" not found in configuration')
-		return False, None
+		return False, None, None
 
 	print(f'[INFO] {account_name}: Using provider "{account.provider}" ({provider_config.domain})')
 
 	user_cookies = parse_cookies(account.cookies)
 	if not user_cookies:
 		print(f'[FAILED] {account_name}: Invalid configuration format')
-		return False, None
+		return False, None, None
 
 	all_cookies = await prepare_cookies(account_name, provider_config, user_cookies)
 	if not all_cookies:
-		return False, None
+		return False, None, None
 
 	client = httpx.Client(http2=True, timeout=30.0, verify=False)
 
@@ -307,15 +307,27 @@ async def check_in_account(account: AccountConfig, account_index: int, app_confi
 			print(user_info_before.get('error', 'Unknown error'))
 
 		if provider_config.needs_manual_check_in():
-			success = execute_check_in(client, account_name, provider_config, headers)
+			check_in_success = execute_check_in(client, account_name, provider_config, headers)
 			# 签到后再次获取用户信息，用于计算签到收益
 			user_info_after = get_user_info(client, headers, user_info_url)
+			if not (user_info_after and user_info_after.get('success')):
+				if user_info_after:
+					print(user_info_after.get('error', 'Unknown error'))
+				print(f'[FAILED] {account_name}: User info verification failed after check-in')
+
+			success = check_in_success and bool(user_info_after and user_info_after.get('success'))
 			return success, user_info_before, user_info_after
 		else:
 			print(f'[INFO] {account_name}: Check-in completed automatically (triggered by user info request)')
 			# 自动签到的情况，再次获取用户信息
 			user_info_after = get_user_info(client, headers, user_info_url)
-			return True, user_info_before, user_info_after
+			if not (user_info_after and user_info_after.get('success')):
+				if user_info_after:
+					print(user_info_after.get('error', 'Unknown error'))
+				print(f'[FAILED] {account_name}: User info verification failed after automatic check-in')
+
+			success = bool(user_info_after and user_info_after.get('success'))
+			return success, user_info_before, user_info_after
 
 	except Exception as e:
 		print(f'[FAILED] {account_name}: Error occurred during check-in process - {str(e)[:50]}...')
